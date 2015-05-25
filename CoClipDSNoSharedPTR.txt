@@ -1,0 +1,1803 @@
+//CoClipDataStructures
+#include <map>
+#include <functional>
+using namespace std;
+
+char * Extract(char * data,int from,int to);
+char * CreateKey(unsigned long long ip, unsigned int port);
+//default comparator for MAPs with char * keys
+struct my_cmp
+{
+    bool operator() (char * const a, char * const b)
+    {
+        return memcmp(a,b,4) < 0;
+    }
+};
+//////////////////////////////////////////////////////////////////////////////////////////////////////
+class RingBuffer//////////////////////////////////Apparent small memory leak!
+{
+public:
+	int length;
+	int usefulLength;
+	int start;
+	int end;
+	unsigned short *dataLen;
+	char ** Buffer;
+
+	RingBuffer();
+	~RingBuffer();
+	void push(char * data,unsigned short len);
+	void pop();
+	char * get(int pos,unsigned short & dlen);
+};
+
+class SmartReader//////////////////////////////////Apparent Small Memory Leak depending on upper structure
+{
+	private:
+		char isOpen;
+		char isFile;
+		char isLoaded;
+		FILE * FD;
+		char * buffer;
+		unsigned int LastBuffered;
+		unsigned int FirstBuffered;
+		int DSlen;
+		int blen;
+		int filled;
+		unsigned int readerPos;
+		RingBuffer Buff;
+
+		char LoadNext();
+		char * LoadBack(unsigned int seq,unsigned short & len);
+		char IsInBuffer(unsigned int seqNo);//-1 must be re-read / 0 is in buffer / 1 must b
+
+	public:
+		unsigned int totalSeq;
+		char * DataSource;
+
+		SmartReader();
+		~SmartReader();
+		inline bool IsFileReady(){return (isLoaded>0);}
+		char OpenReader(char * data,char isfile);//opens the reader and sets up the parameters ( preparing for read )
+		char LoadFile(int nrb); //if data is in file it incrementally loads it into the memory and calculates total seq
+		void push(char *,unsigned short len);
+		char * get(unsigned int seqNo,unsigned short & len);
+		void buff(const unsigned short & length);
+		void CloseReader();
+};
+
+class SmartWriter  ///////////////////////////////////OK!
+{
+	public:
+		char isFile;
+		FILE *FD;
+		int pos;
+		char * DataSource;
+		char isOpen;
+		SmartWriter(){pos=0;DataSource=0;isOpen=0;isFile=0;}
+		~SmartWriter(){CloseWriter();printf(" Call by Destructor");}
+		void PreloadWriter(char * name)
+		{
+			if(!isFile && !isOpen)
+			{
+				isFile = true;
+				int i=0;
+				for(i=0;name[i];++i);
+
+				DataSource = new char[i+1];
+				for(i=0;name[i];++i)
+					DataSource[i]=name[i];
+				DataSource[i]=0;
+			}
+		}
+		char OpenWriter();//opens file preloaded with Preloadwriter
+		char OpenWriter(char * name,char isfile);
+		bool WriteNext(char * data,int len)
+		{
+			if(isOpen)
+			{
+				if(isFile)
+				{
+					//printf("\nSMARTWRITER:Writting data...");
+					fwrite(data,len,1,FD);
+					//if(ferror(FD);
+					/*Signal error while writting file*/
+					return true;
+				}
+				//else
+				//{
+				//	for(int i=0;i<len;++i)
+				//		DataSource[pos++]=data[i];
+				//	DataSource[pos]=0;
+				//}
+			}
+			return false;
+		}
+		void CloseWriter()
+		{
+			if(isFile)
+			{
+				if(isOpen)
+					fclose(FD);
+				isFile=false;
+				delete[] DataSource;
+				printf("\n Smart Writer Closed!");
+			}//signal job is complete
+		}
+};
+
+struct LinkedList{////////////////////////////////////OK!
+	unsigned int seq;
+	unsigned short plen;
+	char *data;
+	LinkedList * next;
+	//LinkedList *inner;
+};
+
+class List{///////////////////////////////////////////OK!
+private:
+	int size;
+	int length;
+	int max_length;
+	LinkedList *list;
+	//functions
+	void pop();//pops element i from root
+
+public:
+	List();
+	List(int packet_length);
+	~List();
+	char push(unsigned int seq,unsigned int LastW,char * dta,unsigned short dlen,int dOffset);//pushes to root
+	char * GetNext(unsigned int lastSeq,unsigned short & lng);
+	int len(){return length;}
+	char AutoGap();
+};
+
+struct UserStruct{
+	char ServerValidated;
+	unsigned int U_IP;
+	unsigned short TCP_Port;
+	unsigned short NoAvConn;
+	char UProto;             //0 LAN //1 WWW_TCP
+	char NoAgeing;
+	unsigned long long LastTimeStamp;
+	unsigned long long LastActive;
+	char name[150];
+	char email[100];
+};
+
+struct RecvStruct{
+	char Accepted;
+	unsigned int LastWSeq;
+	unsigned long long TimeRecvd;
+	unsigned long long TimeStarts;
+	unsigned int TotalSeq;
+	unsigned int PacketType;
+	List PacketBuffer;
+	SmartWriter DataDest;
+};
+
+struct SendStruct{
+	//unsigned int TotalSeq;
+	unsigned int LastSent;
+	unsigned int LastACK;
+	unsigned long long LastActive;
+	unsigned long long FirstSent;
+	char Accepted;
+	float AutoGap;
+};
+
+class PACKET
+{
+	public:
+		unsigned short HdrPos;
+		//packet HDR
+		unsigned short PackType;
+		unsigned long long SendID;
+		unsigned long long DestID;
+		unsigned int SeqNo;
+		unsigned int TotalSeq;
+		unsigned int StreamID;
+		unsigned short PayloadSize;
+		//packet data
+		char data[MAX_MTU];
+
+		int NewHeader(char *,int len);
+		void NewPacket(char *,int packet_size);
+		void NewPacket();
+		PACKET();//manually build the packet
+		PACKET(char *);//build packet form char encoded string
+		PACKET(char *,int packet_size);//build packet form char encoded string
+		void NewData(char *,int len);
+		void AppendRawData(char *,int len);
+		void pack();
+		UserStruct DecodeMeOnline();
+		void EncodeMeOnline(UserStruct,unsigned long long,unsigned long long);
+};
+
+struct KList /////////////////////////////////////////////////////////////OK
+{
+	unsigned long long UID;
+	SendStruct Data;
+	KList * next;
+};
+
+class KeyList{ ///////////////////////////////////////////////////////////OK
+private:
+	int idx;
+	int len;
+public:
+	KList * Record;
+	SmartReader DataSource;
+	unsigned short PacketType;
+
+	KeyList();//constructor
+	~KeyList();//destructor
+
+	char push(unsigned long long uid,SendStruct Data);//pushes person with uid and with Data at the back of the list
+	char pop(int pos);
+	char pop(unsigned long long id);
+	int length(){return len;}
+	KList * get(int pos);
+	void first();//sets idx to -1 use before next
+	KList * next();//returns next klist entry
+};
+
+class UserStack{//undergoing testing
+	//Users Panel
+	public:
+		map<unsigned long long, UserStruct> UserQ;
+	public:
+		char AddUser(unsigned long long key,UserStruct Data,char override);//this also chooses who is the right user out of 2 colliding
+		char UpdateUserData(unsigned long long key, UserStruct Data);
+		void PopUser(unsigned long long key);
+		void UpdateTimeStamp( unsigned long long key, unsigned long long stamp);
+		char UserStillActive(unsigned long long Key);
+};
+
+class SendStack{
+	//SenderQ
+	public:
+		map<unsigned int,KeyList *> SendQ;
+	public:
+		char CreateTask(unsigned int TaskID,char * name,unsigned short PacketType,char isfile);
+		char AddUserToTask(unsigned int TaskID,unsigned long long UID);
+		char UserAcceptedTask(unsigned int TaskID,unsigned long long UID);
+		char AckPacket(unsigned int TaskID,unsigned long long UID,unsigned int Seq,unsigned char AutoGap);
+		char PopUserFromTask(unsigned int TaskID,unsigned long long UID,char * &fname);//this also deletes whole task if all userse have received
+		char ResetSenderPos(unsigned int TaskID,unsigned long long UID,unsigned int Seq);
+		char CancelTask(unsigned int TaskID,char * fname);
+};
+
+class RecvStack{
+	//ReceiverQ
+	public:
+		map<char *, RecvStruct *,my_scmp> RecvQ;
+	public:
+		char CreateTask(unsigned long long UID, unsigned int TaskID,char * name, char isfile,unsigned int pktype);//the functions must be rewritten
+		char AcceptTask(unsigned long long UID, unsigned int TaskID);
+		unsigned long long UpdateTask(PACKET & Data);//also deletes the task if it's done
+		//char AckPacket(unsigned long long UID,unsigned int TaskID,unsigned int Seq);
+		void EndTask(char * key,RecvStruct *Rbuff,char load);//implement
+		char CancelTask(unsigned long long UID, unsigned int TaskID);//implement
+		char AttemptWrite(RecvStruct *Rbuff,char * key);
+		char LoadTasksToReceiver(char * filename,unsigned long long who);
+		bool IsAckReady(unsigned long long UID,unsigned int TaskID);
+};
+
+
+/////////////////////////////////IMPLEMENTATION
+///////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//CoClipDataStructures
+//#include "IPC_Signaling.h"
+//#include "CoClipDataStructures.h"
+#include "CoClipConstants.h"
+#include "Timestamping.h"
+#include <stdio.h>
+//#include "IPC_Signaling.h"
+//////////////////////////////BASE FUNCTIONS////////////////////////////////////////////
+
+char * Extract(char * data,int from,int to)
+{
+	if(from>to)
+		return 0;
+	int len=to-from;
+	char * rez = new char[len+1];
+	for(int i=0;i<len;++i)
+		rez[i]=data[i+from];
+	rez[len]=0;
+	return rez;
+}
+void CreateKey(char rez[],unsigned long long ip, unsigned int port)
+{
+	char lenip=19;
+	char lenpt=10;
+	int idx=0;
+	while(lenip)
+	{
+		rez[idx++]=(ip%10)+48;
+		ip/=10;
+		lenip--;
+	}
+	while(lenpt)
+	{
+		rez[idx++]=(port%10)+48;
+		port/=10;
+		lenpt--;
+	}
+	rez[idx]=0;
+}
+
+PACKET::PACKET()
+{
+	PackType=0;
+	SeqNo=1;
+	TotalSeq=1;
+	StreamID=0;
+	PayloadSize=0;
+	SendID=0;
+	DestID=0;
+}
+inline int FindLastPkStart(char * hdrdta,int &len)
+{
+	printf("\nAnomalous packet detected!");
+	int last=0;
+	for(int i=0;i<len;++i)
+		if(!hdrdta[i])
+			last=i;
+	return last;
+}
+int PACKET::NewHeader(char * hdrdta,int len)
+{
+	for(int i=0;i<len;++i)
+		data[HdrPos++]=hdrdta[i];
+	return -1;
+}
+void PACKET::NewPacket()
+{
+	PackType    = StrToBin(data,1,3);  //2B
+	DestID      = StrToBin(data,3,11); //8B
+	SendID      = StrToBin(data,11,19);//8B
+	SeqNo       = StrToBin(data,19,23);//4B
+	TotalSeq    = StrToBin(data,23,27);//4B
+	StreamID    = StrToBin(data,27,31);//4B
+	PayloadSize = StrToBin(data,31,33);//2B
+}
+
+void PACKET::NewPacket(char * stream,int packet_size)
+{
+	for(int i=0;i<packet_size && i<MAX_MTU;++i)
+		data[i]=stream[i];
+
+	PackType    = StrToBin(data,1,3);  //2B
+	DestID      = StrToBin(data,3,11); //8B
+	SendID      = StrToBin(data,11,19);//8B
+	SeqNo       = StrToBin(data,19,23);//4B
+	TotalSeq    = StrToBin(data,23,27);//4B
+	StreamID    = StrToBin(data,27,31);//4B
+	PayloadSize = StrToBin(data,31,33);//2B
+}
+PACKET::PACKET(char * stream)
+{
+	NewPacket(stream,MAX_MTU);
+}
+PACKET::PACKET(char * stream,int packet_size)
+{
+	NewPacket(stream,packet_size);
+}
+void PACKET::NewData(char * newd,int len)
+{
+	int i=0;
+	int maxPayload=MAX_MTU-HDR_SIZE;
+	for(i=0;i<maxPayload && i<len;++i)
+		data[i+HDR_SIZE]=newd[i];
+	PayloadSize=i;
+}
+void PACKET::AppendRawData(char *newd,int len)
+{
+	int i=0;
+	int maxPayload=MAX_MTU-HDR_SIZE;
+	for(i=PayloadSize+HDR_SIZE;i<maxPayload && i<len;++i)
+		data[i+HDR_SIZE]=newd[i];
+	PayloadSize=i;
+}
+void PACKET::pack()
+{
+	char * Destr = BinToStr(DestID,8);
+	char * Sendr = BinToStr(SendID,8);
+	char * type  = BinToStr(PackType,2);
+	char * seq   = BinToStr(SeqNo,4);
+	char * tseq  = BinToStr(TotalSeq,4);
+	char * strs  = BinToStr(StreamID,4);
+	char * psize = BinToStr(PayloadSize,2);
+
+	int nr=0;
+	int i=0;
+	//add packet beginning signal
+	data[nr++]=PACKET_START_SIGNAL;
+	//building packet
+	data[nr++]=type[0];
+	data[nr++]=type[1];
+
+	for(i=0;i<8;++i)
+		data[nr++]=Destr[i];
+
+	for(i=0;i<8;++i)
+		data[nr++]=Sendr[i];
+
+	for(i=0;i<4;++i)
+		data[nr++]=seq[i];
+
+	for(i=0;i<4;++i)
+		data[nr++]=tseq[i];
+
+	for(i=0;i<4;++i)
+		data[nr++]=strs[i];
+
+	data[nr++]=psize[0];
+	data[nr++]=psize[1];
+	//packing padding to fill up to BUFLEN
+	delete [] Destr;
+	delete [] Sendr;
+	delete [] type;
+	delete [] seq;
+	delete [] tseq;
+	delete [] strs;
+	delete [] psize;
+}
+UserStruct PACKET::DecodeMeOnline()
+{
+	UserStruct rez;
+	rez.LastTimeStamp = StrToBin(data,0+HDR_SIZE,8+HDR_SIZE);
+	rez.U_IP          = StrToBin(data,8+HDR_SIZE,12+HDR_SIZE);
+	rez.TCP_Port      = StrToBin(data,12+HDR_SIZE,14+HDR_SIZE);
+	rez.NoAvConn      = StrToBin(data,14+HDR_SIZE,16+HDR_SIZE);
+	int i=16+HDR_SIZE;
+	int nr=0;
+	//decoding email and name
+	for(;i<MAX_MTU && data[i];++i)
+		rez.email[nr++]=data[i];
+	rez.email[nr]=0;
+	nr=0;
+	i++;
+	for(;i<MAX_MTU && data[i];++i)
+		rez.name[nr++]=data[i];
+	rez.name[nr]=0;
+
+	return rez;
+}
+void PACKET::EncodeMeOnline(UserStruct UserData,unsigned long long To,unsigned long long From)
+{
+	PackType=PACKET_ME_ONLINE;
+	SeqNo=1;
+	TotalSeq=1;
+	StreamID=0;
+	SendID=From;
+	DestID=To;
+
+	char * ts = BinToStr(GetSysTime(),8);
+	int nr=HDR_SIZE;
+	int i;
+	for( i=0; i<8 ; ++i )
+		data[nr++]=ts[i];
+	delete[] ts;
+	ts = BinToStr(UserData.U_IP,4);
+	for( i=0; i<4 ; ++i )
+		data[nr++]=ts[i];
+	ts = BinToStr(UserData.TCP_Port,2);
+	for( i=0; i<2 ; ++i )
+		data[nr++]=ts[i];
+	delete[] ts;
+	ts = BinToStr(UserData.NoAvConn,2);
+	for( i=0; i<2 ; ++i )
+		data[nr++]=ts[i];
+	delete[] ts;
+
+	for( i=0;UserData.email[i] && nr < UDP_PACKET_SIZE;++i)
+		data[nr++]=UserData.email[i];
+	data[nr++]=0;
+	if(nr<MAX_MTU)
+	{
+		for( i=0;UserData.name[i] && nr < UDP_PACKET_SIZE;++i)
+			data[nr++]=UserData.name[i];
+		data[nr++]=0;
+	}
+	PayloadSize=nr-HDR_SIZE;
+}
+
+void UserStack::UpdateTimeStamp(unsigned long long Key,unsigned long long stamp)
+{
+    //UserLock.lock();
+	UserQ[Key].LastTimeStamp=stamp;
+    //UserLock.unlock();
+}
+char UserStack::AddUser(unsigned long long Key,UserStruct Data,char override)
+{
+	//change this to be able to check for colliding users!
+		char ret=1;
+		Data.UProto = PROTO_LAN_TCP;
+		if(UserQ.find(Key)!=UserQ.end())
+		{
+			if(!override)
+			{
+				//do timestamp check and choose prefered source
+				unsigned long long SysTime = GetSysTime();
+				if( GetTimestampDifference(SysTime,UserQ[Key].LastTimeStamp) < GetTimestampDifference(SysTime,Data.LastTimeStamp))
+					return 0;
+			}
+			else
+				if(Data.U_IP!=UserQ[Key].U_IP)//Server reported correct IP. establishing channel
+					Data.UProto = PROTO_ESTABLISH;
+		}
+		else
+		{
+			printf("\nNew User Came ONLINE %lld:%s",Key,Data.name);
+			if(override)//packet comes from server for the first time (not directly from network) so channel must be chosen
+			{
+				Data.UProto = PROTO_ESTABLISH;
+				ret = 3;//new packet from WWW_SERVER
+			}
+			else
+				ret = 2;//new packet form LAN
+		}
+	Data.LastActive = GetSysTime();
+
+	//UserLock.lock();
+	UserQ[Key]=Data;
+	//UserLock.unlock();
+
+	return ret;
+}
+char UserStack::UserStillActive(unsigned long long Key)
+{
+	if(UserQ.find(Key)==UserQ.end())
+		return false;
+
+	//UserLock.lock();
+	UserQ[Key].LastActive = GetSysTime();
+	//UserLock.unlock();
+	return true;
+}
+char UserStack::UpdateUserData(unsigned long long Key,UserStruct Data)
+{
+	//change this to be able to check for colliding users!
+		printf("\nAttempting to update: %lld",Key);
+		if(!UserQ.count(Key))
+			return false;
+		//update field by field
+		//UserLock.lock();
+		if(Data.U_IP)
+			UserQ[Key].U_IP=Data.U_IP;
+		if(Data.TCP_Port)
+			UserQ[Key].TCP_Port=Data.TCP_Port;
+		if(Data.NoAvConn)
+			UserQ[Key].NoAvConn=Data.NoAvConn;
+		if(Data.LastTimeStamp)
+			UserQ[Key].LastTimeStamp = Data.LastTimeStamp;
+		if(Data.LastActive)
+			UserQ[Key].LastActive    = GetSysTime();
+		if(Data.email[0])
+			for(int i=0;Data.email[i];++i)
+				UserQ[Key].email[i]=Data.email[i];
+		if(Data.name[0])
+			for(int i=0;Data.name[i];++i)
+				UserQ[Key].name[i]=Data.name[i];
+        //UserLock.unlock();
+
+		return true;
+}
+void UserStack::PopUser(unsigned long long Key)
+{
+	printf("\nErasing user:%lld",Key);
+	//UserLock.lock();
+	UserQ.erase(Key);
+    //UserLock.unlock();
+}
+
+///////////////////////////////END OF SIMPLE FUNCTION
+//////////////////////////SENDER FUNCTIONS//////////////////////////////////////////
+KeyList::KeyList()
+{
+	Record=0;
+	len=0;
+}
+KeyList::~KeyList()
+{
+	//delete procedure
+	printf("\nKEY LIST(SendStack):Clering list(~Destructor Call)s...!");
+	while( Record && len>0)
+		pop(0);
+}
+char KeyList::push(unsigned long long uid,SendStruct Data)
+{
+	if(!Record)
+	{
+		printf("\nPusghin user to new list");
+		Record = new KList;
+		printf("\nHave allocated KLIST");
+		Record->UID =uid;
+		printf("\nCOPIED UID");
+		//memcpy(&Record->Data,&Data,sizeof(SendStruct));
+		Record->Data=Data;
+		printf("\nCopied user data");
+		Record->next=0;
+		len++;
+		printf("\nDone");
+	}
+	else
+	{
+		printf("\nAppending to old list");
+		KList *iterator = Record;
+		while(iterator->next)
+		{
+			if(iterator->UID==uid)
+				return false;
+			iterator=iterator->next;
+		}
+		if(iterator->UID==uid)
+			return false;
+
+		KList * addee = new KList;
+		addee->UID=uid;
+		addee->Data=Data;
+		addee->next=0;
+		iterator->next=addee;
+		len++;
+	}
+	return true;
+}
+char KeyList::pop(int pos)
+{
+	if( pos>-1 && len )
+	{
+		KList * iterator = Record;
+		KList * last=0;
+
+		while(iterator && pos)
+		{
+			pos--;
+			last=iterator;
+			iterator=iterator->next;
+		}
+		if(!iterator && !last)
+			return false;
+		if(pos>0)
+			return false;
+
+		if(!last && iterator)
+		{
+			KList * nxt = iterator->next;
+			delete iterator;
+			iterator=nxt;
+			if(len==1)//last element was deleted
+				Record=0;
+		}
+		else
+		{
+			if(iterator)
+			{
+				last->next = iterator->next;
+				delete iterator;
+			}
+			else
+			{
+				delete last->next;
+				last->next = 0;
+			}
+		}
+		len--;
+		return true;
+	}
+	return false;
+}
+char KeyList::pop(unsigned long long id)
+{
+	if(len)
+	{
+		KList * iterator = Record;
+		KList *last=0;
+		char found=false;
+		while( iterator )
+		{
+			if(iterator->UID == id)
+			{
+				found=true;
+				break;
+			}
+			last=iterator;
+			iterator=iterator->next;
+		}
+		if(!iterator && !last)
+			return false;
+		if(found)
+		{
+			if(!last)
+			{
+				KList * nxt = iterator->next;
+				printf("\n*FINAL**Damage?:%d %d",iterator->UID,iterator->next);
+				delete iterator;
+				iterator=nxt;
+				printf("\n*FINAL Damage?:%d",iterator);
+				if(len==1)//last element was deleted
+					Record=0;
+			}
+			else
+			{
+				if(iterator)
+				{
+					KList * nxt = iterator->next;
+					last->next=nxt;
+					delete iterator;
+				}
+				if(!iterator)
+					return false;
+			}
+			len--;
+			return true;
+		}
+	}
+	return false;
+}
+KList * KeyList::get(int pos)
+{
+	if(!Record)
+		return 0;
+	KList * iterator = Record;
+
+	while(iterator && pos)
+	{
+		pos--;
+		iterator=iterator->next;
+	}
+	if(!pos)
+		return iterator;
+
+	return 0;
+}
+void KeyList::first()
+{
+	idx=-1;
+}
+KList * KeyList::next()
+{
+	idx++;
+	return get(idx);
+}
+
+char SendStack::CreateTask(unsigned int TaskID,char * name,unsigned short pktype,char isfile)
+{
+	if(SendQ.find(TaskID)!=SendQ.end())//alerady exists
+	{
+		printf("\nSEND_STACK:TASK ALREADY EXISTS!");
+		return 0;//already existing user
+	}
+	KeyList * _empty = new KeyList;
+	_empty->PacketType = pktype;
+	//open the writer
+	if(!_empty->DataSource.OpenReader(name,isfile))
+	{
+		printf("\nDebug::Can't open source file!");
+		return -1;//could not open file
+	}
+	//assigning the data structure to the stack
+	//SendLock.lock();
+	SendQ[TaskID]=_empty;
+	//SendLock.unlock();
+	printf("\nSEND_STACK:TASK WAS CREATED! :NO SEQUENCES:%d",SendQ[TaskID]->DataSource.totalSeq);
+	return 1;//created empty task to populate with users
+}
+char SendStack::AddUserToTask(unsigned int TaskID,unsigned long long UID)
+{
+		SendStruct Data;
+		//Data.TotalSeq=DataSource.totalSeq;
+		Data.LastSent = 0;
+		Data.LastACK  = 0;
+		Data.Accepted = false;
+		Data.AutoGap  = 100;//%100
+
+		if(SendQ.find(TaskID)!=SendQ.end())
+		{
+		    //SendLock.lock();
+		    SendQ[TaskID]->push(UID,Data);
+            //SendLock.unlock();
+		}
+		else
+			return 0;
+		return 1;
+}
+char SendStack::UserAcceptedTask(unsigned int TaskID,unsigned long long UID)
+{
+	//check if task exists
+	if(SendQ.find(TaskID) != SendQ.end())
+	{
+		//iterate the users and set the flag
+		//SendLock.lock();
+		SendQ[TaskID]->first();
+		KList * iterator = SendQ[TaskID]->next();
+		//SendLock.unlock();
+		//printf("\n::Looking for user.%lld TASKID:%d",UID,TaskID);
+		while(iterator)
+		{
+			if(iterator->UID == UID)
+			{
+				//printf(" Found USER");
+				if(!iterator->Data.Accepted)
+				{
+					//SendLock.lock();
+					iterator->Data.Accepted=true;
+                    //SendLock.unlock();
+					return true;
+				}
+				return false;
+			}
+			iterator=iterator->next;
+		}
+	}
+	return false;
+}
+char SendStack::AckPacket(unsigned int TaskID,unsigned long long UID,unsigned int Seq,unsigned char AutoGap)
+{
+	//check if task exists
+	if(SendQ.find(TaskID)==SendQ.end())
+		return false;
+	KeyList * ptr = SendQ[TaskID];
+	//iterate the users and set the flag
+	ptr->first();
+	KList * iterator = ptr->next();
+
+	while(iterator)
+	{
+		if(iterator->UID == UID)
+		{
+			if(iterator->Data.LastACK<Seq)//consider ack if it is greater than the last ACK
+			{
+				//printf("\nHave Updated SeqNo:%d total S:%d GAP:%d",Seq,ptr->DataSource.totalSeq,iterator->Data.LastSent-Seq);
+				//SendLock.lock();
+				iterator->Data.LastACK=Seq;
+				iterator->Data.LastActive=GetSysTime();
+				if(AutoGap>0 && AutoGap<256)
+					iterator->Data.AutoGap = AutoGap;
+				else
+					iterator->Data.AutoGap = 100;//%100
+                //SendLock.unlock();
+				//if(iterator->Data.LastACK >= ptr->DataSource.totalSeq)//user has ACKed all data
+					//printf("\n *** MUST ALSO POP USER FROM TASK:%d USR:%d",TaskID,UID);
+			}
+			return true;
+		}
+		iterator=iterator->next;
+	}
+	return false;
+}
+char SendStack:: ResetSenderPos(unsigned int TaskID,unsigned long long UID,unsigned int Seq)
+{
+//check if task exists
+	if(SendQ.find(TaskID)==SendQ.end())
+	{
+		//printf("\nNO SUCH TASK TO ACK!");
+		printf("\n****Retransmit request for absent task!");
+		return false;
+	}
+	KeyList * ptr = SendQ[TaskID];
+	//iterate the users and set the flag
+	ptr->first();
+	KList * iterator = ptr->next();
+
+	while(iterator)
+	{
+		if(iterator->UID == UID)
+		{
+			printf("\n***Retransmit Request Received SeqNo:%d",Seq);
+			//SendLock.lock();
+			iterator->Data.LastSent = Seq;
+			iterator->Data.LastACK  = Seq;
+			//SendLock.unlock();
+			return true;
+		}
+		iterator=iterator->next;
+	}
+	printf("\n**Have not found user that asked for retransmit!");
+	return false;
+}
+char SendStack::PopUserFromTask(unsigned int TaskID,unsigned long long UID,char * &fname)//no locking! //add & in both
+{
+		fname=0;
+		printf("\n  Popping user :%lld from task %d",UID,TaskID);
+		if(SendQ.find(TaskID)==SendQ.end())
+		{
+			printf("\n!!!!No such task!");
+			return 0;
+		}
+		KeyList * ptr = SendQ[TaskID];
+		//SendLock.lock();
+		if(ptr->pop(UID))//pop the person that has received all the stuff
+            if(!ptr->length())//if there is no other person waiting to receive(task complete)
+            {
+                int i=0;
+                for(;ptr->DataSource.DataSource[i];++i);
+                fname = new char[i+1];
+                for(i=0;ptr->DataSource.DataSource[i];++i)
+                    fname[i]=ptr->DataSource.DataSource[i];
+                fname[i]=0;
+
+                //close reader and delete the pointers
+                ptr->DataSource.CloseReader();//close the Reader
+                printf("\nDeleting task from list since all users are done!:%s",fname);
+                SendQ.erase(TaskID);//delete task
+                //SendLock.unlock();
+                return 2;//sender must be signaled to break and reiterate
+            }
+        //SendLock.unlock();
+		return 1;
+}
+char SendStack::CancelTask(unsigned int TaskID,char * fname)
+{
+	//proper ending of task
+	KeyList * ptr = SendQ[TaskID];
+	if(ptr)
+	{
+		int i=0;
+		int len=0;
+		for(;ptr->DataSource.DataSource[i];++len);
+			fname = new char[len+1];
+		for(i=0;ptr->DataSource.DataSource[i];++i)
+			fname[i]=ptr->DataSource.DataSource[i];
+		fname[i]=0;
+		//close reader and delete the pointers
+		//SendLock.lock();
+		ptr->DataSource.CloseReader();//close the Reader
+		printf("\nDeleting task from list since all users are done!");
+		SendQ.erase(TaskID);//delete task
+        //SendLock.unlock();
+
+		return 2;//sender must be signaled to break and reiterate
+	}
+
+	return 0;
+}
+char SmartWriter::OpenWriter()
+{
+	if(isFile && DataSource && !isOpen)
+	{
+		printf("\nSmartWriter:Attempting to open write file:%s",DataSource);
+		BuildPathToFile(DataSource);//create the necessary folders
+		FD = fopen(DataSource,"wb");
+		if(!FD)
+			return false;
+		isOpen=1;
+	}
+	return true;
+}
+char SmartWriter::OpenWriter(char * name,char isfile)//set to file and assign name
+{
+	isFile=isfile;
+	if(isFile)
+	{
+		if(!isOpen)
+		{
+			printf("\nSmartWriter:Attempting to open write file:%s",name);
+			BuildPathToFile(name);//create the necessary folders
+			FD = fopen(name,"wb");
+			if(!FD)
+				return false;
+			isOpen=true;
+		}
+	}
+	//else
+	//	DataSource = name;
+
+	return true;
+}
+SmartReader::SmartReader()
+{
+	blen=Buff.length;
+	filled=0;
+	LastBuffered=0;
+	FirstBuffered=0;
+	readerPos=0;
+	FD=0;
+	buffer=0;
+	DataSource=0;
+	DSlen=0;
+	isOpen=false;
+	isLoaded=0;
+}
+void SmartReader::push(char * data,unsigned short len)
+{
+	if(isFile)
+	{
+		if(!FirstBuffered)
+		{
+			printf("\nCorrectly initializing FB AND LB");
+			FirstBuffered=1;
+		}
+		if(filled<blen)
+			filled++;
+		else
+			FirstBuffered++;
+
+		LastBuffered++;
+
+		readerPos = LastBuffered;
+		Buff.push(data,len);
+	}
+	else
+	{
+		printf("\nPushing packet to reader");
+		int i;
+		isLoaded=true;
+		for(i=0;i<len;++i)
+			DataSource[i]=data[i];
+		DSlen=i;
+	}
+}
+char SmartReader::IsInBuffer(unsigned int seqNo)
+{
+	if(seqNo>=FirstBuffered && seqNo<=LastBuffered)
+		return 0;
+	if(seqNo<FirstBuffered)
+		return -1;
+	if(seqNo>LastBuffered)
+		return 1;
+	return -1;
+}
+char * SmartReader::get(unsigned int seqNo,unsigned short & length)
+{
+	if(isFile)
+	{
+	    //for debugging
+	    return LoadBack(seqNo,length);
+	    //
+		char read_action = IsInBuffer(seqNo);
+		if(!read_action)
+			return Buff.get(seqNo-FirstBuffered,length);
+		if(read_action>0)
+		{
+			char ret;
+			while(read_action>0)
+			{
+				if(!(ret=LoadNext()))
+					printf("\ndebug: Fatal read error! Abort TASK!");
+
+				if(LastBuffered==1 && !FirstBuffered)
+				{
+					printf("\nCAN'T EFFICIENTLY KEEP TRACK OF THE READING");
+					FirstBuffered=1;
+				}
+				if( (LastBuffered-FirstBuffered)+1 > blen)
+				{
+					printf("\nFILE INTEGRITY MAY BE COMPROMISED!!!! CRAPP BLEN:%d DIFF+1=%d",blen,(LastBuffered-FirstBuffered)+1);
+					FirstBuffered++;
+				}
+
+				read_action = IsInBuffer(seqNo);
+				//printf("\n Loading...Reading actions:%d",read_action);
+				if(ret==2)//end of file
+					break;
+			}
+			//	printf("\nReturning seq:%d FB:%d",seqNo,FirstBuffered);
+			//return data only for demanded sequence buffer the rest
+				return Buff.get(seqNo-FirstBuffered,length);
+			}
+			else	if(read_action<0)
+						return LoadBack(seqNo,length);
+	}
+	else
+	{
+		length = DSlen;
+		return DataSource;
+	}
+	return 0;
+}
+void SmartReader::buff(const unsigned short & length)
+{
+	if(isFile)
+	{
+		unsigned int seqNo=LastBuffered+1;
+		int idx=0;
+		while(idx<length)//buffer eahead for length packets
+		{
+			idx++;
+			char read_action = IsInBuffer(seqNo);
+			//if it already is in the buffer just continue
+			//if(!read_action)
+			//	return;
+			if(read_action>0)//must be buffered
+			{
+				char ret;
+				while(read_action>0)
+				{
+					if(!(ret=LoadNext()))//read next packet form file
+					{
+						printf("\ndebug: Fatal read error! Abort TASK!");
+						return;
+					}
+					if(LastBuffered==1 && !FirstBuffered)
+					{
+						printf("\nCAN'T EFFICIENTLY KEEP TRACK OF THE READING");
+						FirstBuffered=1;
+					}
+					if( (LastBuffered-FirstBuffered)+1 > blen)
+					{
+						printf("\nFILE INTEGRITY MAY BE COMPROMISED!!!! CRAPP BLEN:%d DIFF+1=%d",blen,(LastBuffered-FirstBuffered)+1);
+						FirstBuffered++;
+					}
+
+					if(ret==2)//end of file
+						return;
+				}
+			}
+			else	if(read_action<0) //if file must be loaded from earlyer pos break
+						return;
+		}
+	}
+}
+
+char SmartReader::OpenReader(char * name, char isfile)
+{
+	if(!isOpen)
+	{
+		isFile=isfile;
+		if(isFile)
+		{
+			printf("\nOpening file! %s",name);
+			FD = fopen(name,"rb");
+			buffer = new char[MAX_MTU-HDR_SIZE+1];
+			readerPos = 0;
+			if(!FD)//failed to open file
+				return false;
+			//Load file name
+			DataSource = new char[strlen(name)+1];
+			totalSeq=0;
+			int i=0;
+			for(i=0;name[i] && i<MAX_FILESYS_PATH;++i)
+				DataSource[i]=name[i];
+			DataSource[i]=0;
+		}
+		else
+		{
+			printf("\nSmart Reader Preloading...");
+			LastBuffered=1;
+			FirstBuffered=1;
+			totalSeq=1;
+			DataSource=new char[MAX_MTU-HDR_SIZE+1];
+			DSlen=MAX_MTU-HDR_SIZE;
+		}
+		isOpen=true;
+		return true;
+	}
+	return false;
+}
+char SmartReader::LoadFile(int nrs)
+{
+	if(isOpen && isFile && !isLoaded)
+	{
+		//establish size
+		int nrr=0;
+		int len;
+		for(int i=0;i<nrs;++i)
+		{
+			len=fread(buffer,(MAX_MTU-HDR_SIZE),1,FD);
+			if(ferror (FD))//if error abort task
+			{
+				printf("\nGENERAL_SENDER:: ERROR while reading offered file!");
+				fclose(FD);
+				isLoaded=-1;
+			}
+			totalSeq++;
+			//cache the file untill the buffer is full
+			if(filled<(blen-1))
+			{
+				//printf("\n Buffered %d",len*(MAX_MTU-HDR_SIZE));
+				push(buffer,len*(MAX_MTU-HDR_SIZE));
+			}
+			if(feof(FD))
+			{
+				isLoaded=1;
+				fseek(FD,0,SEEK_SET);//return file pointer to beginning
+				printf("\nFile is ready for transfer:%s total sequences:%lld",DataSource,totalSeq);
+				break;
+			}
+		}
+	}
+	return isLoaded;
+}
+char SmartReader::LoadNext()
+{
+if(isOpen)
+{
+	if(isFile)
+	{
+		//check if readerPos
+		if(readerPos != LastBuffered)
+		{
+			//printf("\nDebug::Reseeking position");
+			readerPos = LastBuffered;
+			fseek(FD,(long long)readerPos*(MAX_MTU-HDR_SIZE),SEEK_SET);
+		}
+		int nor=fread(buffer,1,(MAX_MTU-HDR_SIZE),FD);
+		//printf("\nDebug:Read::%d bytes",nor);
+		if(ferror (FD))//if error abort task
+		{
+			printf("\n Debug:SmartReader encountered error while reading form file!");
+			fclose(FD);
+			return 0;
+		}
+		if(nor)
+			push(buffer,nor);
+		if(feof(FD))//if end of file
+			return 2;//signal end of reading
+		return 1;
+	}
+	else
+		return 0;//if it's not a file it must be in the buffer
+}
+return -1;//the reader has not been opened
+}
+char * SmartReader::LoadBack(unsigned int seq,unsigned short & len)
+{
+	if(isOpen && isFile)
+	{
+		readerPos = seq-1;
+		fseek(FD,(long long)readerPos * (MAX_MTU-HDR_SIZE),SEEK_SET);
+		char * buffer = new char[(MAX_MTU-HDR_SIZE)];
+		len = fread(buffer,1,(MAX_MTU-HDR_SIZE),FD);
+
+		readerPos = seq;
+		return buffer;
+	}
+	return 0;
+}
+void SmartReader::CloseReader()
+{
+if(isOpen)
+{
+	totalSeq=0;
+	if(isFile)//close the file descriptor
+	{
+		printf("\nSmartReader Freeing memory");
+		delete[] buffer;
+		if(isLoaded>-1)
+			fclose(FD);
+		//delete FD;
+	}
+	delete[] DataSource;
+	isOpen=false;
+}
+}
+SmartReader::~SmartReader()
+{
+	CloseReader();
+}
+///////////////////////////////////////////END OF SENDER FUNTIONS
+///////////////////////////////////RECEIVER FUNCTIONS/////////////////////////////////////
+//////////PRIVATE FUNCTIONS//////////////////////////
+List::List()
+{
+	size = MAX_MTU;
+	max_length = 1500;//set back to 4 or 5
+	list = 0;
+	length = 0;
+}
+List::List(int packet_size)
+{
+	size = packet_size;
+	max_length = 1500;//set back to 4 or 5
+	list = 0;
+	length = 0;
+}
+List::~List()
+{
+	//delete the whole list
+	printf("\n List destructor called!");
+	while(list)
+		pop();
+}
+char List::AutoGap()
+{
+
+	if(!list)
+		return 100;
+
+	if(list && !(list->next)) //segmentation fault at this point for some reason
+		return 100;//100%
+
+	int diff = list->next->seq - list->seq;
+	if(diff<0)
+		diff=-diff;
+	if(!diff)
+		diff=1;
+	return (max_length/(max_length-diff))*100;
+}
+char List::push(unsigned int place,unsigned int LastW, char * dta,unsigned short pklen,int dOffset)//pushes to subpath
+{
+	if( LastW < place)
+	{
+		if( abs((long long)place - LastW) < max_length )
+		{
+			if( length < max_length || !list )//if found
+			{
+				if( list != 0 )//null
+				{
+					//	printf("R");
+					//append to root
+					LinkedList *iterator = list;
+					LinkedList *last = 0;
+					while( iterator )//null
+					{
+						if(place < iterator->seq)
+							break;
+						if(place == iterator->seq)
+							return true;
+						last = iterator;
+						iterator = iterator->next;
+					}
+					//printf("F");
+					LinkedList * appendee = new LinkedList;
+					appendee->data  = new char[pklen];
+					appendee->plen  = pklen;
+					appendee->seq   = place;
+					appendee->next  = 0;//null
+					////copy data
+					for ( int i=0;i<pklen;++i)
+						appendee->data[i]=dta[i+dOffset];
+					//rebind list
+					//printf("At");
+					if(last)
+					{
+						if(!iterator)
+						{
+							appendee->next=0;
+							last->next=appendee;
+						//	printf("E");
+						}
+						else
+						{
+							appendee->next=iterator;
+							last->next=appendee;
+							//printf("M");
+						}
+					}
+					else
+					{
+						appendee->next=iterator;
+						list=appendee;
+						//printf("S");
+					}
+					//return root;
+				}
+				else
+				{
+					//add the first element
+					//printf(" NL ");
+					list = new LinkedList();
+					list->data = new char[pklen];
+					for ( int i=0;i<pklen;++i)
+						list->data[i]=dta[i+dOffset];
+					list->next  = 0;//null
+					list->plen  = pklen;
+					list->seq   = place;
+				}
+				length++;
+				//printf("D");
+				return true;
+			}
+		}
+	}
+	return false;
+}
+void List::pop()
+{
+	if(list)
+	{
+		//popped first
+		//printf("\nLIST POPED TOP");
+		delete[] list->data;
+		LinkedList * nxt = list->next;
+		delete list;
+		list=nxt;
+		length--;
+		if(!length)
+			list=0;
+	}
+}
+
+char * List::GetNext(unsigned int last,unsigned short & lng)
+{
+	if(list)
+	{
+		if(list->seq == last+1)
+		{
+			char * ret = new char[list->plen];
+			for(int i=0;i<list->plen;++i)
+				ret[i]=list->data[i];
+			lng = list->plen;
+			pop();
+			return ret;
+		}
+		//else
+			//printf("\n Sequence not continuous");
+	}
+	//else
+	//	printf("\n Inexistent list");
+	return 0;
+}
+char RecvStack:: CreateTask(unsigned long long UID, unsigned int TaskID,char * name, char isfile,unsigned int pktype)
+{
+	char *key= new char[RECV_KEY_LENGTH];
+	CreateKey(key,UID,TaskID);
+	if(!key[0])
+		return false;
+	if(RecvQ.find(key)!=RecvQ.end())//task already exists
+		return false;
+
+	printf("\nRECV_STACK:Creating new task...");
+	RecvStruct * Data=new RecvStruct;
+	printf("\nKey:%s",key);
+	//preset paramteters to accept packets
+	Data->TotalSeq=0;
+	Data->PacketType=pktype;
+	Data->LastWSeq=0;
+	Data->Accepted=false;
+	//open writer to be ready to write the packets
+	Data->DataDest.PreloadWriter(name);
+	//pass the data structure to the Que
+	//RecvLock.lock();
+	RecvQ[key]=Data;
+    //RecvLock.unlock();
+
+    return true;
+}
+char RecvStack::AcceptTask(unsigned long long uid,unsigned int tid)
+{
+	//printf("\n3Does the key exist?:%d",RecvQ.find(key)!=RecvQ.end());
+	char key[RECV_KEY_LENGTH];
+	CreateKey(key,uid,tid);
+	printf("\nAttempting to accept task of key:%s",key);
+	if(RecvQ.find(key)==RecvQ.end())//RecvQ.count(key))//task already exists
+		return false;
+	//RecvLock.lock();
+	if(!RecvQ[key]->DataDest.OpenWriter())
+	{
+		printf("\nSMART_WRITER:failed to create file on disk!");
+		//RecvLock.unlock();
+		return false;
+	}
+	RecvQ[key]->Accepted = true;
+	//RecvLock.unlock();
+	return true;
+}
+unsigned long long RecvStack::UpdateTask(PACKET & Data)
+{
+	char key[RECV_KEY_LENGTH];
+	CreateKey(key,Data.SendID,Data.StreamID);
+	//check if tasks exists
+	if(RecvQ.find(key)==RecvQ.end())
+	{
+		//printf("\nRECV_STACK::inexistent task");
+		return 0;
+	}
+	//push the packet and update the parameters
+	RecvStruct * Rbuff = RecvQ[key]; //reduce number of binary searches on the map by copying the pointer to the result
+	char rez;
+	unsigned long long ret=0;
+	if(Rbuff->Accepted)
+	{
+		//printf("\n*RECEIVER_STACK ID:%d SN:%d TS:%d",Data.StreamID,Data.SeqNo,Data.TotalSeq);
+		if(!Rbuff->TotalSeq)//set the total number of expected sequences for this task from the first packet
+		{
+		    //RecvLock.lock();
+			Rbuff->TotalSeq=Data.TotalSeq;
+			Rbuff->TimeStarts=GetSysTime();
+            //RecvLock.unlock();
+		}
+		//RecvLock.lock(); //this lock is preventive ( normally the same recv list will not be concurrently accessed )
+		rez = Rbuff->PacketBuffer.push(Data.SeqNo,Rbuff->LastWSeq,Data.data,Data.PayloadSize,HDR_SIZE);//push the packet
+		//RecvLock.unlock();
+		unsigned char ag=Rbuff->PacketBuffer.AutoGap();
+		if(rez)
+		{
+		rez = AttemptWrite(Rbuff,key);//attempt to write continuous segments
+		if(rez)
+		{
+			ret = Rbuff->LastWSeq;
+			ret <<=8;
+			ret |=ag;
+		}
+		//else
+		//	printf("\nSmart Writer could not write to disk");
+		}
+		//else
+			//printf("\nRECV_STACK: could not push to buffer");
+	}
+	return ret;
+}
+char RecvStack::AttemptWrite(RecvStruct * Rbuff,char * key)
+{
+	//this runs under the lock in the above function
+	unsigned short len;
+	char ret;
+	while(Rbuff)
+	{
+		char * packet = Rbuff->PacketBuffer.GetNext(Rbuff->LastWSeq,len);
+		if(packet)
+		{
+		    //RecvLock.lock();
+			Rbuff->LastWSeq++;
+			ret = Rbuff->DataDest.WriteNext(packet,len);
+			//RecvLock.unlock();
+			delete[] packet;
+			if(!ret)
+			{
+				//printf("\n SMART WRITER CANNOT WRITE TO DISK");
+				return false;
+			}
+			if(Rbuff->LastWSeq == Rbuff->TotalSeq)//finished writting file
+			{
+				printf("\n**EVENT:New file received:%s",Rbuff->DataDest.DataSource);
+				//now load the tasks in the file to RecvTask (by setting the load param to true)
+				EndTask(key,Rbuff,Rbuff->PacketType==PACKET_STREAM_OFFER);//pop the task from the list and clean up
+				return true;
+			}
+		}
+		else
+		{
+			//printf("\n   RECV_STACK::Could not retrieve data from BUFFER");
+			return false;
+		}
+	}
+	//printf("\nBad RBUFF address");
+	return false;
+}
+char RecvStack::LoadTasksToReceiver(char * filename,unsigned long long who)
+{
+	FILE *FD = fopen(filename,"rb");
+	if(!FD)
+	{
+		printf("\nDEBUG: Could not open task file...");
+		return false;
+	}
+
+	unsigned int B;
+	char CB[4];
+	char FTP;//file type
+	char intNRB=4;/////////////IF STREAM ID size changes this must change as well!!!!!!!!!!1
+	char fname[MAX_FILESYS_PATH+5];
+	char cr;
+
+	int nrb=0;//general index
+	while(1)//read task by task
+	{
+		fread(CB,1,intNRB,FD);
+		fread(&FTP,1,1,FD);
+		B = StrToBin(CB,0,4);
+		if(ferror (FD))//if error abort task
+		{
+			printf("\n Debug:ERROR while reading offer file!");
+			fclose(FD);
+			return false;
+		}
+		if(feof(FD))
+		{
+			printf("\nDebug:End of offer file!");
+			break;
+		}
+		if(B)
+		{
+			do
+			{
+				fread(&cr,1,1,FD);
+
+				if(ferror (FD))//if error abort task
+				{
+					printf("\n Debug:ERROR while reading offer file!");
+					fclose(FD);
+					return false;
+				}
+				if(feof(FD))
+				{
+					printf("\nDebug:End of offer file!");
+					break;
+				}
+
+				if(nrb>=MAX_FILESYS_PATH)
+				{
+					printf("\n@!#%$%THIS FILE IS NOT OF CORRECT FORMAT! POSSIBLE SECURITY BREACH ATTEMPT");
+					fclose(FD);
+					return false;
+				}
+				else
+				{
+					if(!cr)
+					{
+						//end of line
+						fname[nrb]=0;
+						//time to create the task
+						////TO DELETE AFTER SPEED TEST
+						//fname[0]='s';
+						//fname[1]='.';
+						//fname[2]='t';
+						//fname[3]= 0;
+						//////////////////////////////
+						printf("\nDebug::LOADING task ID:%u File:%s len:%d",B,fname,nrb);
+						CreateTask(who,B,fname,true,PACKET_STREAM_DATA);
+						//////////////////////////////WARNING : case when stack is full must be treated
+						break;
+					}
+					else
+						fname[nrb]=cr;
+				}
+				nrb++;
+			}
+			while(1);
+		}
+		nrb = 0;
+	}
+	fclose(FD);
+	return true;
+}
+void RecvStack::EndTask(char * key,RecvStruct * Rbuff,char load)
+{
+	//clean up the list
+	char fileName[MAX_FILESYS_PATH];
+	unsigned long long who=0;
+	unsigned long long mul=1;
+	printf("\n Closing Smart Writer...");
+	if(load)
+	{
+		int i;
+		for( i=0;Rbuff->DataDest.DataSource[i] && i<MAX_FILESYS_PATH;++i)
+			fileName[i]=Rbuff->DataDest.DataSource[i];
+		fileName[i]=0;
+		for( i=0;i<19 && key[i];++i)//////////////////////WARNING if user id size changes this must change as well!!!!!!!
+		{
+			who+=(key[i]-48)*mul;
+			mul*=10;
+		}
+		printf("Identified Person:%lld",who);
+	}
+	//RecvLock.lock();
+	Rbuff->DataDest.CloseWriter();//close the file writer
+	//delete the record form the
+	RecvQ.erase(key);
+	//RecvLock.unlock();
+	//now load the data in the file if it is set to load
+	if(load)
+	{
+		//loading...
+		printf("\nReceiver Stack loading tasks from file:%s",fileName);
+		if(!LoadTasksToReceiver(fileName,who))
+		{
+			printf("\nFailed to load from file.");
+			//////////MUST DELETE FILE HERE!
+		}
+		else
+		{
+			printf("\nSUCCESSFULLY LOADED TASKS(***MIKE's interface must be notified now)");
+			//////////NOTIFY INTERFACE THAT TASKS ARE AVAILABLE
+			char * cmd = new char[MAX_FILENAME+10];
+			cmd[0]=0;
+			//AppendToString(cmd,"foff");
+			//AppendToString(cmd,"<-s");
+			//AppendToString(cmd,fileName);
+			//AppendToString(cmd,"><\\end>");
+			//WriteToInterface(cmd);
+			delete[] cmd;
+		}
+	}
+}
+char RecvStack::CancelTask(unsigned long long UID, unsigned int TaskID)
+{
+	char key[RECV_KEY_LENGTH];
+	CreateKey(key,UID,TaskID);
+	if(RecvQ.find(key)!=RecvQ.end())
+	{
+		EndTask(key,RecvQ[key],false);
+		return true;
+	}
+	return false;
+}
+bool RecvStack::IsAckReady(unsigned long long UID,unsigned int TaskID)
+{
+	char key[RECV_KEY_LENGTH];
+	CreateKey(key,UID,TaskID);
+	RecvStruct * ptr = RecvQ[key];
+	char ret = false;
+	if(!ptr->TimeRecvd)
+		ret = true;
+	//RecvLock.lock();
+	ptr->TimeRecvd = GetSysTime();
+	//RecvLock.unlock();
+
+	if( ret || GetTimestampDifference(ptr->TimeRecvd , GetSysTime()) > ACK_SEND_INTERV )
+		return true;
+	return false;
+}
+RingBuffer::RingBuffer()
+{
+	unsigned long long mem = GetAvailableMem();
+	int allowed = (int)((double)(mem)*0.005);
+	printf("\nTotal Mem:%lld Allowed mem %d",mem,allowed);
+	if(allowed<MAX_MTU)
+	{
+		if(mem>MAX_MTU+1)
+			allowed=MAX_MTU+1;
+		else
+		{
+			printf("\nNot enough system memory!");
+			length=0;
+			return;
+		}
+	}
+
+	length=allowed/MAX_MTU;
+	//length=262929;
+	printf("\nBuffer length:%d",length);
+
+	Buffer  = new char * [length];
+	dataLen = new unsigned short [length];
+	start=end=0;
+	usefulLength=0;
+
+	for(int i=0;i<length;++i)
+	{
+		Buffer[i]=new char[MAX_MTU+1];
+		dataLen[i]=0;
+	}
+}
+RingBuffer::~RingBuffer()
+{
+	printf("\nFreeing buffer memory!");
+	for(int i=0;i<length;++i)
+		delete[] Buffer[i];
+	delete[]  Buffer;
+	delete[]  dataLen;
+}
+void RingBuffer::pop()
+{
+	start++;
+	if(start==length)
+		start=0;
+
+	usefulLength--;
+}
+void RingBuffer::push(char * data,unsigned short len)
+{
+	if(length)
+	{
+		usefulLength++;
+		if(usefulLength>length)
+			pop();
+
+		dataLen[end]=len;
+		for(int i=0;i< len ;++i)
+			Buffer[end][i]=data[i];
+
+		end++;
+		if(end==length)
+			end=0;
+	}
+}
+char * RingBuffer::get( int pos,unsigned short & dlen)
+{
+	if(pos>=usefulLength)
+	{
+		//printf("\nDebug position higher than possible positions:%d available:%d",pos,usefulLength);
+		dlen = 0;
+		return 0;
+	}
+
+	int i=start+pos;
+	if(i>=length)
+		i-=length;
+
+	dlen = dataLen[i];
+
+	return Buffer[i];
+	//char * ret = new char[dlen];
+	//for(int j=0;j<dlen;++j)
+	//	ret[j]=Buffer[i][j];
+	//return ret;
+}
